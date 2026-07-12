@@ -57,3 +57,16 @@ class DashboardResumo(BaseModel):
     cliques_por_dia: list[CliquesPorDia]
     cliques_por_dispositivo: CliquesPorDispositivo
     top_links: list[LinkRanking]
+
+class PontoEvolucao(BaseModel):
+    label: str
+    cliques: int
+
+class EvolucaoResponse(BaseModel):
+    periodo: str
+    total_cliques: int
+    pontos: list[PontoEvolucao]
+
+class AlterarSenha(BaseModel):
+    senha_atual: str
+    nova_senha: str = Field(min_length=8)

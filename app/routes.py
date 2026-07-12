@@ -23,6 +23,9 @@ from app.schemas import (
     CliquesPorDia,
     CliquesPorDispositivo,
     LinkRanking,
+    EvolucaoResponse,
+    PontoEvolucao,
+    AlterarSenha,
 )
 from app.auth import hash_senha, verificar_senha, criar_access_token, get_current_user
 
@@ -245,3 +248,86 @@ def redirecionar(codigo: str, request: Request, db: Session = Depends(get_db)):
 
     logger.info(f"Redirecionando: {codigo} -> {link.url_original} (dispositivo: {dispositivo})")
     return RedirectResponse(url=link.url_original)
+
+# ---------- Estatísticas (evolução por período) ----------
+
+@router.get("/estatisticas/evolucao", response_model=EvolucaoResponse)
+def evolucao(
+    periodo: str = "dia",
+    db: Session = Depends(get_db),
+    usuario_atual: User = Depends(get_current_user),
+):
+    if periodo not in ("dia", "semana", "mes"):
+        raise HTTPException(status_code=400, detail="Período inválido. Use 'dia', 'semana' ou 'mes'.")
+
+    link_ids = [
+        link.id
+        for link in db.query(Link).filter(Link.user_id == usuario_atual.id).all()
+    ]
+
+    agora = datetime.now(timezone.utc)
+    pontos = []
+
+    if not link_ids:
+        if periodo == "dia":
+            qtd_pontos, dias_por_ponto, formato = 7, 1, "%d/%m"
+        elif periodo == "semana":
+            qtd_pontos, dias_por_ponto, formato = 8, 7, "sem %d/%m"
+        else:
+            qtd_pontos, dias_por_ponto, formato = 6, 30, "%m/%Y"
+
+        for i in range(qtd_pontos - 1, -1, -1):
+            referencia = agora - timedelta(days=i * dias_por_ponto)
+            pontos.append(PontoEvolucao(label=referencia.strftime(formato), cliques=0))
+        return EvolucaoResponse(periodo=periodo, total_cliques=0, pontos=pontos)
+
+    cliques_query = db.query(Click).filter(Click.link_id.in_(link_ids))
+    total_cliques = cliques_query.count()
+
+    if periodo == "dia":
+        qtd_pontos, dias_por_ponto, formato = 7, 1, "%d/%m"
+    elif periodo == "semana":
+        qtd_pontos, dias_por_ponto, formato = 8, 7, "sem %d/%m"
+    else:
+        qtd_pontos, dias_por_ponto, formato = 6, 30, "%m/%Y"
+
+    for i in range(qtd_pontos - 1, -1, -1):
+        fim_ref = agora - timedelta(days=i * dias_por_ponto)
+        inicio_ref = fim_ref - timedelta(days=dias_por_ponto)
+        qtd = (
+            cliques_query
+            .filter(Click.timestamp >= inicio_ref, Click.timestamp < fim_ref)
+            .count()
+        )
+        pontos.append(PontoEvolucao(label=fim_ref.strftime(formato), cliques=qtd))
+
+    return EvolucaoResponse(periodo=periodo, total_cliques=total_cliques, pontos=pontos)
+
+# ---------- Conta (senha e exclusão) ----------
+
+@router.put("/auth/senha")
+def alterar_senha(
+    dados: AlterarSenha,
+    db: Session = Depends(get_db),
+    usuario_atual: User = Depends(get_current_user),
+):
+    if not verificar_senha(dados.senha_atual, usuario_atual.senha_hash):
+        raise HTTPException(status_code=401, detail="Senha atual incorreta")
+
+    usuario_atual.senha_hash = hash_senha(dados.nova_senha)
+    db.commit()
+
+    logger.info(f"Senha alterada: {usuario_atual.email}")
+    return {"detail": "Senha alterada com sucesso"}
+
+@router.delete("/auth/me")
+def excluir_conta(
+    db: Session = Depends(get_db),
+    usuario_atual: User = Depends(get_current_user),
+):
+    email = usuario_atual.email
+    db.delete(usuario_atual)
+    db.commit()
+
+    logger.info(f"Conta excluída: {email}")
+    return {"detail": "Conta excluída com sucesso"}
